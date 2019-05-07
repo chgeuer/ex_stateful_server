@@ -2,7 +2,7 @@ defmodule WorkerSupervisor do
   use Supervisor
 
   defp get_child_pid(supervisor_pid, child_type)
-       when is_pid(supervisor_pid) and is_atom(child_type) do
+       when is_pid(supervisor_pid) and child_type in [State, Worker] do
     supervisor_pid
     |> Supervisor.which_children()
     |> Enum.filter(fn {type, _pid, :worker, _} ->
@@ -18,44 +18,35 @@ defmodule WorkerSupervisor do
   def get_state_pid(supervisor_pid), do: supervisor_pid |> get_child_pid(State)
   def get_worker_pid(supervisor_pid), do: supervisor_pid |> get_child_pid(Worker)
 
+  defp kill_child(supervisor_pid, child_type) when is_pid(supervisor_pid) and child_type in [State, Worker]  do
+    supervisor_pid
+    |> get_child_pid(child_type)
+    |> Process.exit(:kill)
+  end
+
+  def kill_worker(supervisor_pid), do: supervisor_pid  |> kill_child(Worker)
+  def kill_state(supervisor_pid), do: supervisor_pid  |> kill_child(State)
+
   def get_interval(supervisor_pid) when is_pid(supervisor_pid) do
     supervisor_pid
     |> get_state_pid()
     |> Agent.get(& &1.interval)
   end
 
-  def get_counter({:supervisor, supervisor_pid}) when is_pid(supervisor_pid) do
-    state_pid =
-      supervisor_pid
-      |> get_state_pid()
-
-    get_counter({:state, state_pid})
-  end
-
-  def get_counter({:state, state_pid}) when is_pid(state_pid) do
-    state_pid
+  def get_counter(supervisor_pid) when is_pid(supervisor_pid) do
+    supervisor_pid
+    |> get_state_pid()
     |> Agent.get(& &1.counter)
   end
 
-  def set_counter(state_pid, counter) when is_pid(state_pid) and is_integer(counter) do
-    state_pid
-    |> Agent.update(fn state -> state |> Map.put(:counter, counter) end)
-  end
-
-  def do_work(supervisor_pid) when is_pid(supervisor_pid) do
-    supervisor_pid
-    |> get_worker_pid()
-    |> Worker.get_state_state()
-  end
-
-  def start_link(_) do
-    Supervisor.start_link(__MODULE__, nil)
+  def start_link(initial_state \\ %{interval: 1_000, counter: 0}) do
+    Supervisor.start_link(__MODULE__, initial_state)
   end
 
   @impl true
-  def init(_) do
+  def init(initial_state = %{interval: _, counter: _}) do
     children = [
-      {State, %{interval: 1, counter: 0}},
+      {State, initial_state},
       {Worker, %{supervisor_pid: self()}}
     ]
 

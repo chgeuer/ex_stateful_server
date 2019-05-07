@@ -1,53 +1,50 @@
 defmodule Worker do
   use GenServer
 
-  def get_state_state(worker_pid) when is_pid(worker_pid) do
-    worker_pid |> GenServer.call(:get_state_state)
+  def start_link(worker_state = %{supervisor_pid: supervisor_pid}, opts \\ [])
+      when is_pid(supervisor_pid) do
+    GenServer.start_link(__MODULE__, worker_state, opts)
   end
 
-  def start_link(%{supervisor_pid: supervisor_pid}, opts \\ []) when is_pid(supervisor_pid) do
-    GenServer.start_link(__MODULE__, %{supervisor_pid: supervisor_pid}, opts)
+  def init(worker_state) do
+    {:ok, worker_state, {:continue, :post_init}}
   end
 
-  def init(state = %{supervisor_pid: supervisor_pid}) when is_pid(supervisor_pid) do
-    {:ok, state, {:continue, :post_init}}
-  end
-
-  def handle_continue(:post_init, state = %{supervisor_pid: supervisor_pid}) do
-    state_pid = WorkerSupervisor.get_state_pid(supervisor_pid)
-
-    local_counter = WorkerSupervisor.get_counter({:state, state_pid})
-
-    updated_state =
-      state
-      |> Map.put(:state_pid, state_pid)
-      |> Map.put(:local_counter, local_counter)
+  def handle_continue(:post_init, worker_state = %{supervisor_pid: supervisor_pid}) do
+    updated_worker_state =
+      worker_state
+      |> get_agent_state()
+      |> Map.put(:supervisor_pid, supervisor_pid)
 
     self()
-    |> Process.send_after(:tick, 1_000)
+    |> Process.send_after(:tick, updated_worker_state.interval)
 
-    {:noreply, updated_state}
+    {:noreply, updated_worker_state}
   end
 
-  def handle_info(:tick, state = %{state_pid: state_pid, local_counter: local_counter}) do
-    new_local_counter = local_counter + 1
+  defp get_agent_state(_worker_state = %{supervisor_pid: supervisor_pid}) do
+    supervisor_pid
+    |> WorkerSupervisor.get_state_pid()
+    |> Agent.get(& &1)
+  end
 
-    state_pid
-    |> WorkerSupervisor.set_counter(new_local_counter)
+  defp set_agent_state(worker_state = %{supervisor_pid: supervisor_pid}) do
+    supervisor_pid
+    |> WorkerSupervisor.get_state_pid()
+    |> Agent.update(fn _ -> worker_state end)
+  end
 
+  def handle_info(:tick, state = %{ interval: interval }) do
     updated_state =
       state
-      |> Map.put(:local_counter, new_local_counter)
+      |> Map.update!(:counter, &(&1 + 1))
+
+    updated_state
+    |> set_agent_state()
 
     self()
-      |> Process.send_after(:tick, 1_000)
+    |> Process.send_after(:tick, interval)
 
     {:noreply, updated_state}
-  end
-
-  def handle_call(:get_state_state, _, state = %{state_pid: state_pid}) do
-    reply = state_pid |> :sys.get_state()
-
-    {:reply, reply, state}
   end
 end
