@@ -98,16 +98,20 @@ defmodule StatefulServer do
 
     def get_counter(pid), do: pid |> get(& &1.counter)
 
+    def get_agent_state(%{state_pid: pid}),
+      do:
+        pid
+        |> Agent.get(& &1)
+
     def get_agent_state(%{supervisor_pid: pid}),
       do:
         pid
-        |> get_state_pid()
+        |> StatefulServer.WorkerSupervisor.get_state_pid()
         |> Agent.get(& &1)
 
-    def set_agent_state(worker_state = %{supervisor_pid: pid}),
+    def set_agent_state(worker_state = %{state_pid: pid}),
       do:
         pid
-        |> get_state_pid()
         |> Agent.update(fn _ -> worker_state end)
 
     def start_link(state \\ @start_link_defaults),
@@ -119,11 +123,13 @@ defmodule StatefulServer do
       agent_state = initial_state |> Map.put(:supervisor_pid, pid)
 
       children = [
-        {Agent, fn -> agent_state end},
-        {Worker, %{supervisor_pid: pid}}
+        # {Agent, fn -> agent_state end},
+        # {Worker, %{supervisor_pid: pid}, restart: :permanent}
+        worker(Agent, [fn -> agent_state end]),
+        worker(Worker, [%{supervisor_pid: pid}], restart: :permanent)
       ]
 
-      Supervisor.init(children, strategy: :one_for_one)
+      Supervisor.init(children, strategy: :rest_for_one, max_restarts: 10)
     end
   end
 
@@ -142,16 +148,21 @@ defmodule StatefulServer do
       {:ok, state, {:continue, :post_init}}
     end
 
-    def handle_continue(:post_init, state) do
+    def handle_continue(:post_init, %{supervisor_pid: supervisor_pid} = state) do
+      state_pid =
+        supervisor_pid
+        |> WorkerSupervisor.get_state_pid()
+
       state =
         state
         |> WorkerSupervisor.get_agent_state()
+        |> Map.put(:state_pid, state_pid)
 
-      IO.puts(
-        "Worker #{inspect(self())} initialized. Supervisor #{inspect(state.supervisor_pid)}. Agent #{
-          inspect(state.supervisor_pid |> WorkerSupervisor.get_state_pid())
-        } Initial count #{state.counter}"
-      )
+      # IO.puts(
+      #   "Worker #{inspect(self())} initialized. Supervisor #{inspect(state.supervisor_pid)}. Agent #{
+      #     inspect(state.supervisor_pid |> WorkerSupervisor.get_state_pid())
+      #   } Initial count #{state.counter}"
+      # )
 
       self()
       |> Process.send_after(:tick, state.interval)
